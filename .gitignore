@@ -1,0 +1,18 @@
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+stocks.db
+go.sum
+
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
