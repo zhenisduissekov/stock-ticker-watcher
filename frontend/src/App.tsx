@@ -11,13 +11,17 @@ interface PriceUpdate {
   price: number
 }
 
-const API_BASE = 'http://localhost:8080/api'
+const getApiBase = () => {
+  const host = window.location.hostname
+  const port = window.location.port || (window.location.protocol === 'https:' ? '443' : '80')
+  const apiPort = port === '5173' ? '8080' : port
+  return `${window.location.protocol}//${host}:${apiPort}/api`
+}
 
 function App() {
   const [watchlist, setWatchlist] = useState<Stock[]>([])
   const [tickerInput, setTickerInput] = useState('')
   const [connected, setConnected] = useState(false)
-  const [ws, setWs] = useState<WebSocket | null>(null)
 
   useEffect(() => {
     loadWatchlist()
@@ -26,7 +30,7 @@ function App() {
 
   const loadWatchlist = async () => {
     try {
-      const response = await fetch(`${API_BASE}/watchlist`)
+      const response = await fetch(`${getApiBase()}/watchlist`)
       const data = await response.json()
       setWatchlist(data)
     } catch (error) {
@@ -36,7 +40,9 @@ function App() {
 
   const connectWebSocket = () => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const wsUrl = `${protocol}//localhost:8080/ws`
+    const host = window.location.hostname
+    const port = window.location.port || (window.location.protocol === 'https:' ? '443' : '80')
+    const wsUrl = `${protocol}//${host}:${port === '5173' ? '8080' : port}/ws`
     const websocket = new WebSocket(wsUrl)
 
     websocket.onopen = () => {
@@ -59,8 +65,6 @@ function App() {
       const data: PriceUpdate = JSON.parse(event.data)
       updatePrice(data.ticker, data.price)
     }
-
-    setWs(websocket)
   }
 
   const updatePrice = (ticker: string, price: number) => {
@@ -76,7 +80,7 @@ function App() {
     if (!ticker) return
 
     try {
-      const response = await fetch(`${API_BASE}/watchlist`, {
+      const response = await fetch(`${getApiBase()}/watchlist`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ticker }),
@@ -99,7 +103,7 @@ function App() {
 
   const removeStock = async (ticker: string) => {
     try {
-      const response = await fetch(`${API_BASE}/watchlist/${ticker}`, {
+      const response = await fetch(`${getApiBase()}/watchlist/${ticker}`, {
         method: 'DELETE',
       })
 
