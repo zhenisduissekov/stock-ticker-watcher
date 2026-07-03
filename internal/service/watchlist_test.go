@@ -28,8 +28,19 @@ func (m *MockStore) Close() error {
 	return nil
 }
 
+func (m *MockStore) Ping(ctx context.Context) error {
+	return nil
+}
+
 func (m *MockStore) GetWatchlist(ctx context.Context, userID int) ([]string, error) {
 	m.getCalled = true
+	if m.getError != nil {
+		return nil, m.getError
+	}
+	return m.watchlist, nil
+}
+
+func (m *MockStore) GetAllTickers(ctx context.Context) ([]string, error) {
 	if m.getError != nil {
 		return nil, m.getError
 	}

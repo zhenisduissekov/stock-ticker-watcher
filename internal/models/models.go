@@ -27,9 +27,9 @@ type User struct {
 
 // UserStock represents a user's stock in the database
 type UserStock struct {
-	ID      int    `json:"id"`
-	UserID  int    `json:"user_id"`
-	Ticker  string `json:"ticker"`
+	ID        int       `json:"id"`
+	UserID    int       `json:"user_id"`
+	Ticker    string    `json:"ticker"`
 	CreatedAt time.Time `json:"created_at"`
 }
 

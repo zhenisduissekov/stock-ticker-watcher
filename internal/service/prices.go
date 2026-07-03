@@ -2,17 +2,22 @@ package service
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 )
+
+// ErrPriceInvalid is returned when a price update carries a non-positive price.
+var ErrPriceInvalid = errors.New("price must be positive")
 
 // PriceService handles price updates and caching
 type PriceService struct {
-	priceCache map[string]float64
-	cacheMutex sync.RWMutex
-	hub        Hub
-	logger     *slog.Logger
+	priceCache       map[string]float64
+	cacheMutex       sync.RWMutex
+	hub              Hub
+	logger           *slog.Logger
+	updatesProcessed atomic.Int64
 }
 
 // Hub interface for WebSocket broadcasting
@@ -33,10 +38,10 @@ func NewPriceService(hub Hub, logger *slog.Logger) *PriceService {
 func (s *PriceService) UpdatePrice(ctx context.Context, ticker string, price float64) error {
 	// Validate
 	if ticker == "" {
-		return fmt.Errorf("ticker cannot be empty")
+		return ErrTickerEmpty
 	}
 	if price <= 0 {
-		return fmt.Errorf("price must be positive")
+		return ErrPriceInvalid
 	}
 
 	// Update cache
@@ -47,8 +52,15 @@ func (s *PriceService) UpdatePrice(ctx context.Context, ticker string, price flo
 	// Broadcast to WebSocket subscribers
 	s.hub.Broadcast(ticker, price)
 
+	s.updatesProcessed.Add(1)
 	s.logger.Info("Price updated", "ticker", ticker, "price", price)
 	return nil
+}
+
+// UpdatesProcessed returns the total number of price updates processed since
+// startup (webhook + simulator).
+func (s *PriceService) UpdatesProcessed() int64 {
+	return s.updatesProcessed.Load()
 }
 
 // InitPrice sets a seed price for a ticker only if one is not already cached.

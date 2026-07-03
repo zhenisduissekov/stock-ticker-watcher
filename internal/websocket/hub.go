@@ -169,6 +169,18 @@ func (h *Hub) ClientCount() int {
 	return len(h.clients)
 }
 
+// SubscriptionCount returns the total number of active (ticker, client)
+// subscriptions across all tickers.
+func (h *Hub) SubscriptionCount() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	total := 0
+	for _, clients := range h.subscriptions {
+		total += len(clients)
+	}
+	return total
+}
+
 // GenerateClientID generates a unique client ID
 func GenerateClientID() string {
 	return uuid.New().String()

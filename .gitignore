@@ -4,15 +4,27 @@
 *.dll
 *.so
 *.dylib
-stocks.db
+server            # compiled backend binary (`go build`)
+coverage.out
 # go.sum is intentionally committed for reproducible builds (Dockerfile COPYs it)
+
+# SQLite database + WAL sidecar files
+stocks.db
+stocks.db-wal
+stocks.db-shm
+data/             # docker-compose volume mount for the SQLite DB
 
 # Node
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
 
-# IDE
+# Archives produced by scripts/archive.sh (written outside the repo, but ignore any local copies)
+*.zip
+
+# Env / IDE / OS
+.env
+.env.local
 .vscode/
 .idea/
 .DS_Store

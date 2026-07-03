@@ -7,11 +7,11 @@ import (
 
 // Config holds application configuration
 type Config struct {
-	Port            string
-	DatabasePath    string
-	FrontendOrigin  string
-	DemoUserID      int
-	SimulatePrices  bool
+	Port             string
+	DatabasePath     string
+	FrontendOrigin   string
+	DemoUserID       int
+	SimulatePrices   bool
 	SimulateInterval int // in seconds
 	// StaticDir enables optional single-binary serving of the built frontend.
 	// Empty (the default) means the backend serves API/WebSocket only; the
@@ -30,13 +30,13 @@ func Load() *Config {
 	staticDir := getEnv("STATIC_DIR", "")
 
 	return &Config{
-		Port:            port,
-		DatabasePath:    dbPath,
-		FrontendOrigin:  frontendOrigin,
-		DemoUserID:      demoUserID,
-		SimulatePrices:  simulatePrices,
+		Port:             port,
+		DatabasePath:     dbPath,
+		FrontendOrigin:   frontendOrigin,
+		DemoUserID:       demoUserID,
+		SimulatePrices:   simulatePrices,
 		SimulateInterval: simulateInterval,
-		StaticDir:       staticDir,
+		StaticDir:        staticDir,
 	}
 }
 

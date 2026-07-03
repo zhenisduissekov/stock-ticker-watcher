@@ -8,12 +8,18 @@ import (
 
 // RegisterRoutes registers all API routes
 func (h *Handlers) RegisterRoutes(r *mux.Router) {
-	// Apply CORS middleware to all routes
+	// Structured request logging (outermost) then CORS, applied to all routes.
+	r.Use(h.loggingMiddleware)
 	r.Use(h.corsMiddleware)
+
+	// Operational endpoints
+	r.HandleFunc("/healthz", h.Healthz).Methods("GET")
+	r.HandleFunc("/readyz", h.Readyz).Methods("GET")
+	r.HandleFunc("/stats", h.Stats).Methods("GET")
 
 	// API routes
 	api := r.PathPrefix("/api").Subrouter()
-	
+
 	api.HandleFunc("/watchlist", h.GetWatchlist).Methods("GET")
 	api.HandleFunc("/watchlist", h.AddTicker).Methods("POST")
 	api.HandleFunc("/watchlist/{ticker}", h.RemoveTicker).Methods("DELETE")

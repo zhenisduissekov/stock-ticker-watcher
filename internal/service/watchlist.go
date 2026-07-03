@@ -2,12 +2,21 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 
 	"stock-ticker-watcher/internal/models"
 	"stock-ticker-watcher/internal/store"
+)
+
+// Validation errors returned by the service layer. Handlers classify these
+// with errors.Is; their messages are surfaced verbatim to API clients.
+var (
+	ErrTickerEmpty   = errors.New("ticker cannot be empty")
+	ErrTickerTooLong = errors.New("ticker too long (max 10 characters)")
+	ErrTickerInvalid = errors.New("ticker contains invalid characters")
 )
 
 // PriceStore provides read/seed access to the live price cache without exposing
@@ -17,9 +26,10 @@ type PriceStore interface {
 	InitPrice(ticker string, price float64) float64
 }
 
-// seedPrice returns a deterministic starting price for a ticker that has no
+// SeedPrice returns a deterministic starting price for a ticker that has no
 // live price yet, used until the provider/simulator sends a real update.
-func seedPrice(ticker string) float64 {
+// Exported so the simulator can seed the same value the watchlist shows.
+func SeedPrice(ticker string) float64 {
 	return 100 + (float64(len(ticker)) * 10)
 }
 
@@ -49,7 +59,7 @@ func (s *WatchlistService) GetWatchlist(ctx context.Context, userID int, prices 
 		price, exists := prices.GetPrice(ticker)
 		if !exists {
 			// Seed with a deterministic starting price until a real update arrives
-			price = seedPrice(ticker)
+			price = SeedPrice(ticker)
 		}
 		watchlist = append(watchlist, models.WatchlistItem{
 			Ticker: ticker,
@@ -65,31 +75,29 @@ func (s *WatchlistService) AddTicker(ctx context.Context, userID int, req models
 	// Validate request
 	ticker := strings.TrimSpace(strings.ToUpper(req.Ticker))
 	if ticker == "" {
-		return nil, fmt.Errorf("ticker cannot be empty")
+		return nil, ErrTickerEmpty
 	}
 
 	if len(ticker) > 10 {
-		return nil, fmt.Errorf("ticker too long (max 10 characters)")
+		return nil, ErrTickerTooLong
 	}
 
 	// Check for invalid characters
 	for _, r := range ticker {
 		if !((r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
-			return nil, fmt.Errorf("ticker contains invalid characters")
+			return nil, ErrTickerInvalid
 		}
 	}
 
-	// Add to database
+	// Add to database. The store returns store.ErrTickerExists on a duplicate,
+	// which we propagate (wrapped) so the handler can classify it via errors.Is.
 	if err := s.store.AddTicker(ctx, userID, ticker); err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint") || strings.Contains(err.Error(), "already exists") {
-			return nil, fmt.Errorf("ticker already in watchlist")
-		}
 		return nil, fmt.Errorf("failed to add ticker: %w", err)
 	}
 
 	// Seed a starting price in the live cache if one isn't already present.
 	// InitPrice mutates the real cache under lock and returns the effective price.
-	price := prices.InitPrice(ticker, seedPrice(ticker))
+	price := prices.InitPrice(ticker, SeedPrice(ticker))
 
 	s.logger.Info("Ticker added to watchlist", "user_id", userID, "ticker", ticker)
 
@@ -103,13 +111,12 @@ func (s *WatchlistService) AddTicker(ctx context.Context, userID int, req models
 func (s *WatchlistService) RemoveTicker(ctx context.Context, userID int, ticker string) error {
 	ticker = strings.TrimSpace(strings.ToUpper(ticker))
 	if ticker == "" {
-		return fmt.Errorf("ticker cannot be empty")
+		return ErrTickerEmpty
 	}
 
+	// The store returns store.ErrTickerNotFound when the ticker isn't present;
+	// propagate it (wrapped) for the handler to classify via errors.Is.
 	if err := s.store.RemoveTicker(ctx, userID, ticker); err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			return fmt.Errorf("ticker not found in watchlist")
-		}
 		return fmt.Errorf("failed to remove ticker: %w", err)
 	}
 

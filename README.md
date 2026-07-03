@@ -1,392 +1,223 @@
 # Stock Ticker Watcher
 
-A production-grade real-time stock ticker watchlist application with a layered Go backend and React frontend.
+[![CI](https://github.com/zhenisduissekov/stock-ticker-watcher/actions/workflows/ci.yml/badge.svg)](https://github.com/zhenisduissekov/stock-ticker-watcher/actions/workflows/ci.yml)
 
-## Architecture Overview
+A real-time stock watchlist: add tickers, and their prices stream to the browser
+over WebSockets as they change. The backend is a layered Go service; the
+frontend is React + Vite. Data lives in SQLite. Everything runs locally with one
+command or via Docker Compose.
 
-This project demonstrates clean architecture principles with clear separation of concerns, following idiomatic Go patterns suitable for senior backend engineering interviews.
+## What this is & why it exists
 
-### System Architecture Diagram
+This is a **portfolio project**, built to demonstrate production-minded backend
+engineering in Go without hiding behind a framework or a pile of infrastructure.
+The problem — a live watchlist fed by a price stream — is deliberately small, so
+the interesting part is *how* it's built: clean layering, correct concurrency,
+graceful shutdown, a subscription-aware WebSocket hub, and tests that exercise
+the real paths. It favors correctness and clarity over feature count.
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           THIRD-PARTY PROVIDER                                │
-│                        (Simulated via Background Ticker)                       │
-│                                                                              │
-│  Every 2 seconds → Random price updates for: AAPL, NVDA, IBM, GOOGL, etc.  │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    │ HTTP Webhook
-                                    │ POST /api/webhooks/prices
-                                    │ {"ticker": "AAPL", "price": 175.50}
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              GO BACKEND                                      │
-│                          Port: 8080                                          │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  ┌──────────────────────────────────────────────────────────────────────┐ │
-│  │                     HTTP API Layer                                     │ │
-│  │  internal/api/                                                        │ │
-│  │  ├── handlers.go  - Request handling, validation, response formatting │ │
-│  │  └── routes.go    - Route registration, middleware                    │ │
-│  └──────────────────────────────────────────────────────────────────────┘ │
-│                                    │                                        │
-│  ┌──────────────────────────────────────────────────────────────────────┐ │
-│  │                     Service Layer                                      │ │
-│  │  internal/service/                                                     │ │
-│  │  ├── watchlist.go - Watchlist business logic                          │ │
-│  │  └── prices.go    - Price caching and broadcasting                     │ │
-│  └──────────────────────────────────────────────────────────────────────┘ │
-│                                    │                                        │
-│  ┌──────────────────────────────────────────────────────────────────────┐ │
-│  │                     WebSocket Hub                                      │ │
-│  │  internal/websocket/                                                   │ │
-│  │  ├── hub.go       - Subscription-aware broadcasting                  │ │
-│  │  └── client.go    - Client connection management                      │ │
-│  └──────────────────────────────────────────────────────────────────────┘ │
-│                                    │                                        │
-│  ┌──────────────────────────────────────────────────────────────────────┐ │
-│  │                     Data Layer                                         │ │
-│  │  internal/store/                                                        │ │
-│  │  ├── interface.go  - Store interface definition                       │ │
-│  │  └── sqlite.go     - SQLite implementation                            │ │
-│  └──────────────────────────────────────────────────────────────────────┘ │
-│                                    │                                        │
-│  ┌──────────────────────────────────────────────────────────────────────┐ │
-│  │                     Background Simulator                               │ │
-│  │  internal/simulator/simulator.go                                     │ │
-│  └──────────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                    │
-                    ┌───────────────┴───────────────┐
-                    │ WebSocket Connection          │
-                    │ ws://localhost:8080/ws        │
-                    │                               │
-                    ▼                               ▼
-┌─────────────────────────────────────┐   ┌─────────────────────────────────────┐
-│        BROWSER CLIENT 1             │   │        BROWSER CLIENT 2             │
-│   http://localhost:5173             │   │   http://localhost:5173             │
-├─────────────────────────────────────┤   ├─────────────────────────────────────┤
-│                                     │   │                                     │
-│  ┌───────────────────────────────┐  │   │  ┌───────────────────────────────┐  │
-│  │      React + Vite Frontend   │  │   │  │      React + Vite Frontend   │  │
-│  ├──────────────────────────────┤  │   │  ├──────────────────────────────┤  │
-│  │  • Add ticker input           │  │   │  │  • Add ticker input           │  │
-│  │  • Watchlist display          │  │   │  │  • Watchlist display          │  │
-│  │  • Remove buttons            │  │   │  │  • Remove buttons            │  │
-│  │  • Connection status         │  │   │  │  • Connection status         │  │
-│  │  • WebSocket client          │  │   │  │  • WebSocket client          │  │
-│  └──────────────────────────────┘  │   │  └──────────────────────────────┘  │
-│                                     │   │                                     │
-│  Receives: {"ticker":"AAPL",        │   │  Receives: {"ticker":"AAPL",        │
-│            "price":175.50}          │   │            "price":175.50}          │
-│                                     │   │                                     │
-│  Updates UI in real-time            │   │  Updates UI in real-time            │
-└─────────────────────────────────────┘   └─────────────────────────────────────┘
-```
+## Architecture
 
-### Project Layout
+Requests flow inward through four layers, each depending only on the layer below
+via an interface. Two background flows (the price simulator and the WebSocket
+hub) feed the same central price path that the webhook uses.
 
 ```
-.
-├── cmd/
-│   └── server/
-│       └── main.go              # Application entry point, graceful shutdown
-├── internal/
-│   ├── api/
-│   │   ├── handlers.go          # HTTP request handlers
-│   │   └── routes.go            # Route registration
-│   ├── config/
-│   │   └── config.go            # Environment-based configuration
-│   ├── models/
-│   │   └── models.go            # Data structures (DTOs, entities)
-│   ├── service/
-│   │   ├── watchlist.go         # Watchlist business logic
-│   │   ├── prices.go            # Price service with caching
-│   │   └── watchlist_test.go    # Unit tests
-│   ├── store/
-│   │   ├── interface.go         # Store interface definition
-│   │   └── sqlite.go            # SQLite implementation
-│   ├── simulator/
-│   │   └── simulator.go         # Background price simulation
-│   └── websocket/
-│       ├── hub.go               # Subscription-aware WebSocket hub
-│       └── client.go            # WebSocket client management
-├── pkg/                         # Public packages (if any)
-├── frontend/
-│   ├── src/
-│   │   ├── App.tsx              # Main React component
-│   │   ├── App.css              # Component styles
-│   │   ├── main.tsx             # React entry point
-│   │   └── index.css            # Global styles
-│   ├── index.html               # HTML template
-│   ├── package.json             # Node dependencies
-│   ├── vite.config.ts           # Vite configuration
-│   ├── tsconfig.json            # TypeScript config
-│   ├── Dockerfile               # Frontend Docker build
-│   └── nginx.conf               # Nginx configuration
-├── Dockerfile                   # Backend Docker build
-├── docker-compose.yml           # Multi-container orchestration
-├── go.mod                       # Go module definition
-├── go.sum                       # Go dependency checksums
-└── README.md                    # This file
+                 ┌───────────────────────────────────────────────┐
+   Browser ◄──── │  Frontend (React + Vite)                       │
+      │   WS     │  add/remove tickers · live price display       │
+      │  price   └───────────────────────────────────────────────┘
+      │ updates            │ REST /api            ▲ ws://…/ws
+      ▼                    ▼                      │
+┌──────────────────────────────────────────────────────────────────────┐
+│  GO BACKEND  (:8080)                                                   │
+│                                                                        │
+│   HTTP API        internal/api      handlers, routing, middleware      │
+│      │                                                                 │
+│      ▼                                                                 │
+│   Service         internal/service  watchlist logic · price cache      │
+│      │                    ▲                    │ Broadcast(ticker)      │
+│      ▼                    │ GetAllTickers      ▼                        │
+│   Store           internal/store     SQLite (WAL) ── Store interface    │
+│                           ▲                                            │
+│                           │ reads watched tickers                      │
+│   Simulator       internal/simulator ── random-walks watched prices    │
+│                                              │ UpdatePrice (central)    │
+│                                              ▼                          │
+│   WebSocket Hub   internal/websocket  ticker → subscribed clients       │
+└──────────────────────────────────────────────────────────────────────┘
+                              ▲
+                              │ POST /api/webhooks/prices
+                       Third-party price provider (or curl)
 ```
 
-### Design Principles
+**Layers**
 
-**Layered Architecture**: Clear separation between API, service, and data layers. Each layer has a single responsibility and depends only on the layer below it.
+| Layer | Package | Responsibility |
+|-------|---------|----------------|
+| HTTP API | `internal/api` | Request decoding, validation-error mapping, JSON responses, CORS + request logging middleware |
+| Service | `internal/service` | Watchlist business logic; thread-safe in-memory price cache; the single `UpdatePrice` write path |
+| Store | `internal/store` | `Store` interface + SQLite implementation (WAL, busy-timeout, foreign keys) |
+| WebSocket | `internal/websocket` | `Hub` (subscription map + event loop) and per-connection `Client` read/write pumps |
+| Simulator | `internal/simulator` | Background price generator driven by the current watchlist |
 
-**Interface-Based Design**: The store layer is defined as an interface (`store.Store`), enabling easy swapping of implementations (e.g., SQLite → PostgreSQL) without affecting service logic.
+Composition happens in [`cmd/server/main.go`](cmd/server/main.go): it wires the
+store, services, hub, simulator, and HTTP server, then handles graceful shutdown.
 
-**Dependency Injection**: Services receive dependencies through constructors, making testing straightforward and enabling mock implementations.
-
-**Context Propagation**: All handlers and service methods accept `context.Context` for request cancellation, timeouts, and tracing.
-
-**Structured Logging**: Uses `log/slog` for structured, JSON-formatted logs suitable for production environments.
-
-**Graceful Shutdown**: Proper cleanup of HTTP server, WebSocket connections, and background goroutines on SIGTERM/SIGINT.
-
-## Request Flows
-
-### Watchlist Management Flow
+## Request flow (REST)
 
 ```
-Client → HTTP Request → API Handler → Service Layer → Store Layer → SQLite
-        ↓                    ↓              ↓              ↓
-   CORS Middleware    Validation    Business Logic    SQL Query
-        ↓                    ↓              ↓              ↓
-   Response ← JSON Format ← Watchlist ← Tickers ← Result Set
+Client → CORS + logging middleware → API handler → service → store → SQLite
+                                          │            │
+                                     decode/validate  business rules
+Response ← JSON ← handler ← (item | typed error) ←────┘
 ```
 
-1. **GET /api/watchlist**
-   - Handler validates request context
-   - Service calls store to fetch tickers for user
-   - Service merges with price cache
-   - Returns watchlist with current prices
+- `GET /api/watchlist` — fetch the user's tickers, merged with current cached prices (seeded deterministically if no live price yet).
+- `POST /api/watchlist` — validate (uppercase, alphanumeric, ≤10 chars), insert, seed a starting price. `409` on duplicate, `400` on invalid input.
+- `DELETE /api/watchlist/{ticker}` — remove a ticker. `404` if absent.
 
-2. **POST /api/watchlist**
-   - Handler validates JSON body
-   - Service validates ticker format (uppercase, alphanumeric, max 10 chars)
-   - Service checks for duplicates
-   - Store inserts into database
-   - Service initializes price in cache if new
-   - Returns created watchlist item
+Errors are **typed sentinel errors** (`store.ErrTickerExists`,
+`service.ErrTickerEmpty`, …) that handlers classify with `errors.Is` — not
+string matching — so status-code mapping stays robust.
 
-3. **DELETE /api/watchlist/{ticker}**
-   - Handler extracts ticker from URL
-   - Service validates ticker format
-   - Store removes from database
-   - Returns success message
-
-### Price Update Flow (Webhook)
+## WebSocket flow
 
 ```
-Third-Party → POST /api/webhooks/prices → API Handler → Price Service
-                                                   ↓
-                                            Update Cache
-                                                   ↓
-                                            Broadcast to Hub
-                                                   ↓
-                                            Send to Subscribers
-                                                   ↓
-                                            WebSocket Clients
+Client connects → hub registers client → client sends {"action":"subscribe","ticker":"AAPL"}
+      │                                          │
+   WritePump (server→client, + pings)      hub adds client to ticker's subscriber set
+   ReadPump  (client→server, + pongs)            │  and pushes the current price immediately
+      │                                          ▼
+      └──────────────  price update  ← hub.Broadcast(ticker) delivers ONLY to subscribers
 ```
 
-1. **POST /api/webhooks/prices**
-   - Handler validates JSON body (ticker, price)
-   - Price service validates (price > 0)
-   - Updates in-memory price cache (thread-safe)
-   - Triggers broadcast to WebSocket hub
-   - Returns success response
+- **Subscription-aware:** the hub maps `ticker → set of clients`; a price update is delivered only to clients subscribed to that ticker, not broadcast to everyone.
+- **Keepalive:** each connection uses ping/pong with read/write deadlines, so half-open connections are detected and cleaned up.
+- **Backpressure:** each client has a buffered send channel; if a slow client's buffer is full, the update is dropped rather than blocking the hub.
 
-### WebSocket Flow
+Client messages: `{"action":"subscribe"|"unsubscribe","ticker":"AAPL"}`
+Server messages: `{"ticker":"AAPL","price":175.50}`
+
+## Simulator flow
+
+The simulator stands in for a third-party price feed. **It is driven by the
+watchlist, not a hardcoded ticker list:**
 
 ```
-Client → WebSocket Upgrade → Hub Registration → Send Current Prices
-              ↓                              ↓
-         Client ID Generation          Subscribe to Tickers
-              ↓                              ↓
-         Read Pump (Client Messages)   Write Pump (Server Messages)
-              ↓                              ↓
-    Handle Subscribe/Unsubscribe    Send Price Updates
-              ↓                              ↓
-         Update Subscriptions      Only to Subscribed Clients
+every SIMULATE_INTERVAL seconds:
+  tickers ← store.GetAllTickers()          # exactly what users are watching
+  for each ticker:
+    base ← last known price (or a deterministic seed if none yet)
+    next ← base ± up to 1%                  # smooth random walk
+    priceService.UpdatePrice(ticker, next)  # same central path as the webhook
 ```
 
-**Subscription-Aware Broadcasting**:
-- Each client maintains a list of subscribed tickers
-- Hub maintains mapping: `ticker → set of clients`
-- When price updates, only clients subscribed to that ticker receive the message
-- Reduces bandwidth and improves scalability vs. broadcast-to-all
-
-**Client Messages**:
-```json
-// Subscribe to ticker
-{"action": "subscribe", "ticker": "AAPL"}
-
-// Unsubscribe from ticker
-{"action": "unsubscribe", "ticker": "AAPL"}
-```
-
-**Server Messages**:
-```json
-// Price update
-{"ticker": "AAPL", "price": 175.50}
-```
+So a ticker you add starts moving within one interval, and the simulator never
+emits prices for symbols nobody is watching. Both the simulator and the webhook
+funnel through `PriceService.UpdatePrice`, which updates the cache and broadcasts
+to the hub — one write path, one source of truth.
 
 ## Configuration
 
-Environment variables control application behavior:
-
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PORT` | 8080 | HTTP server port |
-| `DATABASE_PATH` | ./stocks.db | SQLite database file path |
-| `FRONTEND_ORIGIN` | * | CORS allowed origin |
-| `DEMO_USER_ID` | 1 | Demo user ID for MVP |
-| `SIMULATE_PRICES` | true | Enable background price simulation |
-| `SIMULATE_INTERVAL` | 2 | Simulation interval in seconds |
+| `PORT` | `8080` | HTTP server port |
+| `DATABASE_PATH` | `./stocks.db` | SQLite database file path |
+| `FRONTEND_ORIGIN` | `*` | CORS allowed origin |
+| `DEMO_USER_ID` | `1` | Demo user ID (single-user MVP) |
+| `SIMULATE_PRICES` | `true` | Enable the background price simulator |
+| `SIMULATE_INTERVAL` | `2` | Simulator tick interval (seconds) |
 | `STATIC_DIR` | (empty) | Optional: serve a built frontend from this dir (single-binary mode). Empty = API/WebSocket only |
 
-## Frontend Serving Strategy
+## Running locally
 
-The backend serves **only** the JSON API and WebSocket endpoints. The frontend
-is served separately, and there is a single serving path per environment:
-
-- **Docker Compose**: the `frontend` container (nginx) serves the built assets
-  and reverse-proxies `/api` and `/ws` to the backend. This is the canonical
-  deployment path.
-- **Local development**: Vite serves the frontend on port 5173 and talks to the
-  backend on port 8080.
-- **Optional single-binary mode**: set `STATIC_DIR` (e.g. `STATIC_DIR=./frontend/dist`)
-  to have the Go server also serve the built frontend. Disabled by default so
-  there is no conflict with nginx/Vite.
-
-## Running the Application
-
-### Local Development
-
-**Backend** (API + WebSocket on port 8080):
+**Backend** (API + WebSocket on `:8080`):
 ```bash
 go run ./cmd/server
 ```
 
-**Frontend** (served by Vite on port 5173):
+**Frontend** (Vite dev server on `:5173`):
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
 
-Access at http://localhost:5173
+Open http://localhost:5173. In dev, Vite serves the UI and the app talks to the
+backend on `:8080`.
 
-### Docker
+**Send a manual price update** (bypasses the simulator):
+```bash
+curl -X POST http://localhost:8080/api/webhooks/prices \
+  -H "Content-Type: application/json" \
+  -d '{"ticker":"AAPL","price":180.00}'
+```
 
-**Build and run with docker-compose**:
+## Running with Docker Compose
+
 ```bash
 docker-compose up --build
 ```
 
-This starts:
-- Backend (API + WebSocket) on port 8080
-- Frontend (nginx, serves assets and proxies `/api` + `/ws` to the backend) on port 5173
-- Persistent data volume for SQLite database
+Starts:
+- **backend** — API + WebSocket on `:8080`, SQLite persisted to a mounted `./data` volume.
+- **frontend** — nginx on `:5173` serving the built assets and reverse-proxying `/api` and `/ws` to the backend (the canonical deployment path).
 
-### Manual Webhook Test
+Open http://localhost:5173.
+
+## Running tests
 
 ```bash
-curl -X POST http://localhost:8080/api/webhooks/prices \
-  -H "Content-Type: application/json" \
-  -d '{"ticker": "AAPL", "price": 180.00}'
+go test ./...        # all backend tests
+go vet ./...         # static checks
+gofmt -l .           # formatting (no output = clean)
 ```
 
-## Testing
+Coverage includes:
+- **Service** — ticker validation, duplicate/empty handling, watchlist + price merging.
+- **WebSocket hub** — subscribe/unsubscribe, per-ticker delivery isolation, multi-client fan-out, shutdown.
+- **Simulator** — a newly added ticker receives updates; updates are driven by the watchlist (not a fixed list); prices walk from the last known value.
+- **API (integration)** — real HTTP + WebSocket end-to-end: subscribe → update → deliver, health/readiness probes, and live `/stats` counters.
 
-Run unit tests:
-```bash
-go test ./internal/service/...
-```
+CI runs all of the above plus `go build ./...` and the frontend `tsc && vite build` on every push and PR — see [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
-Tests cover:
-- Ticker validation (format, length, characters)
-- Duplicate detection
-- Empty ticker handling
-- Watchlist retrieval with price merging
+## Production-minded features already included
 
-## Scaling Discussion
+- **Graceful shutdown** — SIGINT/SIGTERM cancels the simulator, drains the hub, and shuts down the HTTP server with a timeout.
+- **Health & readiness probes** — `/healthz` (liveness) and `/readyz` (pings the DB); wired into the Docker healthcheck.
+- **Structured logging** — `log/slog` JSON logs, plus per-request logging middleware capturing method, path, status, and duration.
+- **Observability endpoint** — `/stats` exposes active clients, active subscriptions, and total price updates processed.
+- **SQLite reliability** — WAL journal mode, `busy_timeout`, enforced foreign keys, and a tuned connection pool.
+- **Correct concurrency** — single-goroutine hub event loop, `RWMutex`-guarded price cache, atomic counters, buffered sends with drop-on-full backpressure.
+- **Typed errors** — sentinel errors classified with `errors.Is`, keeping HTTP status mapping robust to message changes.
+- **Reproducible builds** — multi-stage Docker builds; `go.sum` committed; CI enforces formatting, vet, tests, and build.
 
-### Current Limitations
+## Interview value — skills demonstrated
 
-1. **Single Node**: All WebSocket connections handled by one process
-2. **In-Memory Cache**: Prices lost on restart, no persistence
-3. **SQLite**: Not suitable for high-concurrency writes
-4. **No Authentication**: Single demo user
+| Skill | Where to look |
+|-------|---------------|
+| **Idiomatic Go** | interface-driven packages, sentinel errors, context propagation, table-driven tests |
+| **Clean architecture** | `api → service → store` layering; dependencies point inward through interfaces (`Store`, `Hub`, `PriceCache`, `WatchlistSource`) |
+| **WebSockets** | subscription-aware hub, ping/pong keepalive, read/write pumps ([`internal/websocket`](internal/websocket)) |
+| **Concurrency** | hub event loop, mutex-protected cache, atomics, non-blocking fan-out — race-free under `-race` |
+| **Graceful shutdown** | ordered teardown of goroutines + server in [`cmd/server/main.go`](cmd/server/main.go) |
+| **SQLite reliability** | WAL/busy-timeout/FK pragmas and pool tuning in [`internal/store/sqlite.go`](internal/store/sqlite.go) |
+| **Testing** | unit + integration tests, real HTTP/WS in tests, deterministic white-box simulator tests |
+| **Docker** | multi-stage backend & frontend images, Compose with nginx reverse proxy and a persistent volume |
+| **Observability** | structured logs, request logging middleware, `/stats`, health/readiness probes |
+| **CI** | GitHub Actions enforcing fmt/vet/test/build for Go and typecheck/build for the frontend |
 
-### Migration Path to Production Scale
+## Current limitations
 
-**Phase 1: Redis Pub/Sub**
-- Replace in-memory price cache with Redis
-- Use Redis Pub/Sub for cross-node price broadcasting
-- Benefits: Persistence, distributed caching, horizontal scaling
+These are conscious scope choices for a focused portfolio project, not oversights:
 
-**Phase 2: PostgreSQL**
-- Migrate from SQLite to PostgreSQL
-- Better concurrency, replication support
-- Use connection pooling (pgxpool)
-
-**Phase 3: Message Queue (Kafka/NATS)**
-- Replace webhook with message queue consumer
-- Decouple price ingestion from broadcasting
-- Enable replay of price updates
-
-**Phase 4: Multiple WebSocket Nodes**
-- Deploy multiple backend instances behind load balancer
-- Use Redis Pub/Sub or message queue for cross-node coordination
-- Sticky sessions or connection migration for WebSocket
-
-**Phase 5: Authentication & Multi-Tenancy**
-- Add JWT-based authentication
-- User-specific watchlists
-- Row-level security in database
-- Rate limiting per user
-
-### Architecture Evolution
-
-```
-Current:
-[Client] → [Single Go Server] → [SQLite] → [In-Memory Cache]
-
-Scaled:
-[Client] → [Load Balancer] → [Go Server 1] → [PostgreSQL]
-              ↓                    [Go Server 2] → [Redis Pub/Sub]
-              ↓                    [Go Server 3] → [Kafka]
-              ↓
-         [NATS/Kafka] ← [Price Provider]
-```
-
-## Future Improvements
-
-1. **Historical Data**: Store price history in time-series database (TimescaleDB)
-2. **Charts**: Integrate charting library (Recharts, Chart.js)
-3. **Alerts**: Price threshold notifications via WebSocket
-4. **Persistence**: Redis for price cache with TTL
-5. **Metrics**: Prometheus metrics for monitoring
-6. **Tracing**: OpenTelemetry integration
-7. **Rate Limiting**: Per-user API rate limiting
-8. **Webhook Authentication**: HMAC signature verification
-9. **GraphQL**: Alternative to REST API
-10. **gRPC**: High-performance inter-service communication
-
-## MVP Notes
-
-- Single demo user (ID: 1) for simplicity
-- No authentication or authorization
-- No historical data persistence
-- In-memory price cache (resets on restart)
-- Simulated third-party provider via background ticker
-- CORS enabled for all origins (configure for production)
-- SQLite for simplicity (migrate to PostgreSQL for production)
+- **Single demo user, no auth** — one hardcoded user; no authentication/authorization or multi-tenancy.
+- **In-memory price cache** — prices reset on restart (the watchlist itself persists in SQLite).
+- **Single node** — all WebSocket state is in-process; scaling out would need a shared pub/sub layer, intentionally not added here.
+- **SQLite** — great for this scale; a write-heavy multi-node deployment would move to PostgreSQL.
+- **Open CORS & unauthenticated webhook** — fine for a local demo; production would lock down origins and sign webhook payloads.
+- **Unbounded random walk** — the simulator has no mean-reversion, so long runs can drift; cosmetic only.
 
 ## License
 

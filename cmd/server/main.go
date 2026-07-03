@@ -54,11 +54,11 @@ func main() {
 	// Initialize simulator
 	var sim *simulator.Simulator
 	if cfg.SimulatePrices {
-		sim = simulator.New(priceService, logger, cfg.SimulateInterval)
+		sim = simulator.New(priceService, dbStore, logger, cfg.SimulateInterval)
 	}
 
 	// Initialize handlers
-	handlers := api.NewHandlers(watchlistService, priceService, hub, cfg, logger)
+	handlers := api.NewHandlers(watchlistService, priceService, hub, dbStore, cfg, logger)
 
 	// Setup router
 	r := mux.NewRouter()
