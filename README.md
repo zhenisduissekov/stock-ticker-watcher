@@ -247,17 +247,32 @@ Environment variables control application behavior:
 | `DEMO_USER_ID` | 1 | Demo user ID for MVP |
 | `SIMULATE_PRICES` | true | Enable background price simulation |
 | `SIMULATE_INTERVAL` | 2 | Simulation interval in seconds |
+| `STATIC_DIR` | (empty) | Optional: serve a built frontend from this dir (single-binary mode). Empty = API/WebSocket only |
+
+## Frontend Serving Strategy
+
+The backend serves **only** the JSON API and WebSocket endpoints. The frontend
+is served separately, and there is a single serving path per environment:
+
+- **Docker Compose**: the `frontend` container (nginx) serves the built assets
+  and reverse-proxies `/api` and `/ws` to the backend. This is the canonical
+  deployment path.
+- **Local development**: Vite serves the frontend on port 5173 and talks to the
+  backend on port 8080.
+- **Optional single-binary mode**: set `STATIC_DIR` (e.g. `STATIC_DIR=./frontend/dist`)
+  to have the Go server also serve the built frontend. Disabled by default so
+  there is no conflict with nginx/Vite.
 
 ## Running the Application
 
 ### Local Development
 
-**Backend**:
+**Backend** (API + WebSocket on port 8080):
 ```bash
 go run ./cmd/server
 ```
 
-**Frontend**:
+**Frontend** (served by Vite on port 5173):
 ```bash
 cd frontend
 npm install
@@ -274,8 +289,8 @@ docker-compose up --build
 ```
 
 This starts:
-- Backend on port 8080
-- Frontend on port 5173
+- Backend (API + WebSocket) on port 8080
+- Frontend (nginx, serves assets and proxies `/api` + `/ws` to the backend) on port 5173
 - Persistent data volume for SQLite database
 
 ### Manual Webhook Test

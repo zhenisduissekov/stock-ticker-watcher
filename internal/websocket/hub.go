@@ -4,29 +4,39 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/google/uuid"
 	"stock-ticker-watcher/internal/models"
+
+	"github.com/google/uuid"
 )
 
 // Hub maintains the set of active clients and their subscriptions
 type Hub struct {
-	clients      map[*Client]bool
+	clients       map[*Client]bool
 	subscriptions map[string]map[*Client]bool // ticker -> clients
-	register     chan *Client
-	unregister   chan *Client
-	broadcast    chan models.PriceUpdate
-	mu           sync.RWMutex
-	logger       *slog.Logger
+	register      chan *Client
+	unregister    chan *Client
+	broadcast     chan models.PriceUpdate
+	priceCache    PriceCache
+	shutdown      chan struct{}
+	mu            sync.RWMutex
+	logger        *slog.Logger
+}
+
+// PriceCache interface for getting current prices
+type PriceCache interface {
+	GetPrice(ticker string) (float64, bool)
 }
 
 // NewHub creates a new WebSocket hub
-func NewHub(logger *slog.Logger) *Hub {
+func NewHub(logger *slog.Logger, priceCache PriceCache) *Hub {
 	return &Hub{
 		clients:       make(map[*Client]bool),
 		subscriptions: make(map[string]map[*Client]bool),
 		register:      make(chan *Client),
 		unregister:    make(chan *Client),
 		broadcast:     make(chan models.PriceUpdate, 256),
+		priceCache:    priceCache,
+		shutdown:      make(chan struct{}),
 		logger:        logger,
 	}
 }
@@ -43,6 +53,10 @@ func (h *Hub) Run() {
 
 		case update := <-h.broadcast:
 			h.broadcastUpdate(update)
+
+		case <-h.shutdown:
+			h.logger.Info("Hub shutting down")
+			return
 		}
 	}
 }
@@ -87,6 +101,16 @@ func (h *Hub) Subscribe(client *Client, ticker string) {
 	}
 	h.subscriptions[ticker][client] = true
 	h.logger.Info("Client subscribed", "client_id", client.ID, "ticker", ticker)
+
+	// Send current price if available
+	if h.priceCache != nil {
+		if price, exists := h.priceCache.GetPrice(ticker); exists {
+			client.SendPriceUpdate(models.PriceUpdate{
+				Ticker: ticker,
+				Price:  price,
+			})
+		}
+	}
 }
 
 // Unsubscribe removes a client from a ticker's subscription list
@@ -148,4 +172,16 @@ func (h *Hub) ClientCount() int {
 // GenerateClientID generates a unique client ID
 func GenerateClientID() string {
 	return uuid.New().String()
+}
+
+// Shutdown gracefully stops the hub
+func (h *Hub) Shutdown() {
+	close(h.shutdown)
+}
+
+// SetPriceCache sets the price cache (used to resolve circular dependency)
+func (h *Hub) SetPriceCache(priceCache PriceCache) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.priceCache = priceCache
 }

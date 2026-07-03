@@ -51,6 +51,20 @@ func (s *PriceService) UpdatePrice(ctx context.Context, ticker string, price flo
 	return nil
 }
 
+// InitPrice sets a seed price for a ticker only if one is not already cached.
+// Returns the effective price (existing or newly seeded). Unlike a plain map
+// write, this mutates the real internal cache under the lock.
+func (s *PriceService) InitPrice(ticker string, price float64) float64 {
+	s.cacheMutex.Lock()
+	defer s.cacheMutex.Unlock()
+
+	if existing, ok := s.priceCache[ticker]; ok {
+		return existing
+	}
+	s.priceCache[ticker] = price
+	return price
+}
+
 // GetPrice retrieves the current price for a ticker
 func (s *PriceService) GetPrice(ticker string) (float64, bool) {
 	s.cacheMutex.RLock()
@@ -60,20 +74,15 @@ func (s *PriceService) GetPrice(ticker string) (float64, bool) {
 	return price, exists
 }
 
-// GetAllPrices returns all cached prices
+// GetAllPrices returns a snapshot copy of all cached prices, safe for the
+// caller to read without holding the lock.
 func (s *PriceService) GetAllPrices() map[string]float64 {
 	s.cacheMutex.RLock()
 	defer s.cacheMutex.RUnlock()
 
-	// Return a copy to avoid race conditions
 	prices := make(map[string]float64, len(s.priceCache))
 	for k, v := range s.priceCache {
 		prices[k] = v
 	}
 	return prices
-}
-
-// GetPriceCache returns the price cache for watchlist service
-func (s *PriceService) GetPriceCache() map[string]float64 {
-	return s.GetAllPrices()
 }

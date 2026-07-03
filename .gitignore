@@ -5,7 +5,7 @@
 *.so
 *.dylib
 stocks.db
-go.sum
+# go.sum is intentionally committed for reproducible builds (Dockerfile COPYs it)
 
 # Node
 frontend/node_modules/

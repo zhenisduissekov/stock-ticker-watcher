@@ -9,13 +9,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gorilla/mux"
 	"stock-ticker-watcher/internal/api"
 	"stock-ticker-watcher/internal/config"
 	"stock-ticker-watcher/internal/service"
 	"stock-ticker-watcher/internal/simulator"
 	"stock-ticker-watcher/internal/store"
 	"stock-ticker-watcher/internal/websocket"
+
+	"github.com/gorilla/mux"
 )
 
 func main() {
@@ -37,13 +38,18 @@ func main() {
 	}
 	defer dbStore.Close()
 
-	// Initialize WebSocket hub
-	hub := websocket.NewHub(logger)
+	// Initialize services
+	watchlistService := service.NewWatchlistService(dbStore, logger)
+
+	// Initialize WebSocket hub (without price cache initially)
+	hub := websocket.NewHub(logger, nil)
 	go hub.Run()
 
-	// Initialize services
+	// Initialize price service with hub reference
 	priceService := service.NewPriceService(hub, logger)
-	watchlistService := service.NewWatchlistService(dbStore, logger)
+
+	// Set price cache on hub to resolve circular dependency
+	hub.SetPriceCache(priceService)
 
 	// Initialize simulator
 	var sim *simulator.Simulator
@@ -57,7 +63,14 @@ func main() {
 	// Setup router
 	r := mux.NewRouter()
 	handlers.RegisterRoutes(r)
-	handlers.RegisterStaticRoutes(r, "../frontend/dist")
+
+	// Optional single-binary frontend serving. Disabled by default: in Docker
+	// Compose nginx serves the built frontend and proxies /api and /ws here,
+	// and in local dev Vite serves it. Set STATIC_DIR to enable.
+	if cfg.StaticDir != "" {
+		handlers.RegisterStaticRoutes(r, cfg.StaticDir)
+		logger.Info("Serving static frontend", "dir", cfg.StaticDir)
+	}
 
 	// Create HTTP server
 	server := &http.Server{
@@ -105,6 +118,9 @@ func main() {
 
 	// Cancel simulator
 	cancel()
+
+	// Shutdown WebSocket hub
+	hub.Shutdown()
 
 	// Shutdown HTTP server
 	if err := server.Shutdown(shutdownCtx); err != nil {

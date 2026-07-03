@@ -3,8 +3,9 @@ FROM golang:1.21-alpine AS builder
 
 WORKDIR /app
 
-# Install dependencies
-RUN apk add --no-cache git
+# Install dependencies. gcc + musl-dev are required because go-sqlite3 is a
+# cgo package (built with CGO_ENABLED=1 below).
+RUN apk add --no-cache git gcc musl-dev
 
 # Copy go mod files
 COPY go.mod go.sum ./

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import './App.css'
 
 interface Stock {
@@ -9,6 +9,11 @@ interface Stock {
 interface PriceUpdate {
   ticker: string
   price: number
+}
+
+interface SubscribeMessage {
+  action: 'subscribe' | 'unsubscribe'
+  ticker: string
 }
 
 const getApiBase = () => {
@@ -22,11 +27,37 @@ function App() {
   const [watchlist, setWatchlist] = useState<Stock[]>([])
   const [tickerInput, setTickerInput] = useState('')
   const [connected, setConnected] = useState(false)
+  const wsRef = useRef<WebSocket | null>(null)
+  // Mirror watchlist in a ref so the WebSocket onopen handler (which closes over
+  // state captured at connect time) always reads the current set of tickers.
+  const watchlistRef = useRef<Stock[]>([])
+  const subscribedRef = useRef<Set<string>>(new Set())
+
+  useEffect(() => {
+    watchlistRef.current = watchlist
+  }, [watchlist])
 
   useEffect(() => {
     loadWatchlist()
     connectWebSocket()
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close()
+      }
+    }
   }, [])
+
+  // Subscribe to any watchlist tickers not yet subscribed whenever the
+  // watchlist changes while the socket is open. This covers DB-loaded tickers
+  // arriving after the socket connects, without requiring a re-add.
+  useEffect(() => {
+    if (!connected) return
+    watchlist.forEach((stock) => {
+      if (!subscribedRef.current.has(stock.ticker)) {
+        subscribeToTicker(stock.ticker)
+      }
+    })
+  }, [watchlist, connected])
 
   const loadWatchlist = async () => {
     try {
@@ -43,16 +74,33 @@ function App() {
     const host = window.location.hostname
     const port = window.location.port || (window.location.protocol === 'https:' ? '443' : '80')
     const wsUrl = `${protocol}//${host}:${port === '5173' ? '8080' : port}/ws`
-    const websocket = new WebSocket(wsUrl)
-
-    websocket.onopen = () => {
-      setConnected(true)
-      console.log('WebSocket connected')
+    console.log('Attempting WebSocket connection to:', wsUrl)
+    
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      console.log('WebSocket already connected')
+      return
     }
 
-    websocket.onclose = () => {
+    const websocket = new WebSocket(wsUrl)
+    wsRef.current = websocket
+
+    websocket.onopen = () => {
+      // A fresh connection has no server-side subscriptions yet.
+      subscribedRef.current.clear()
+      setConnected(true)
+      console.log('WebSocket connected successfully')
+      // Resubscribe to all current watchlist tickers on connection/reconnection.
+      // Read from the ref to avoid a stale closure over the initial (empty) state.
+      watchlistRef.current.forEach((stock: Stock) => {
+        subscribeToTicker(stock.ticker)
+      })
+    }
+
+    websocket.onclose = (event) => {
       setConnected(false)
-      console.log('WebSocket disconnected')
+      wsRef.current = null
+      subscribedRef.current.clear()
+      console.log('WebSocket disconnected:', event.code, event.reason)
       // Attempt to reconnect after 3 seconds
       setTimeout(connectWebSocket, 3000)
     }
@@ -64,6 +112,24 @@ function App() {
     websocket.onmessage = (event) => {
       const data: PriceUpdate = JSON.parse(event.data)
       updatePrice(data.ticker, data.price)
+    }
+  }
+
+  const subscribeToTicker = (ticker: string) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      const message: SubscribeMessage = { action: 'subscribe', ticker }
+      wsRef.current.send(JSON.stringify(message))
+      subscribedRef.current.add(ticker)
+      console.log('Subscribed to ticker:', ticker)
+    }
+  }
+
+  const unsubscribeFromTicker = (ticker: string) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      const message: SubscribeMessage = { action: 'unsubscribe', ticker }
+      wsRef.current.send(JSON.stringify(message))
+      subscribedRef.current.delete(ticker)
+      console.log('Unsubscribed from ticker:', ticker)
     }
   }
 
@@ -90,6 +156,8 @@ function App() {
         const data = await response.json()
         setWatchlist(prev => [...prev, data])
         setTickerInput('')
+        // Subscribe to the newly added ticker
+        subscribeToTicker(ticker)
       } else if (response.status === 409) {
         alert('Ticker already in watchlist')
       } else {
@@ -109,6 +177,8 @@ function App() {
 
       if (response.ok) {
         setWatchlist(prev => prev.filter(stock => stock.ticker !== ticker))
+        // Unsubscribe from the removed ticker
+        unsubscribeFromTicker(ticker)
       }
     } catch (error) {
       console.error('Failed to remove stock:', error)

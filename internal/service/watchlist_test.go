@@ -61,6 +61,32 @@ func (m *MockStore) RemoveTicker(ctx context.Context, userID int, ticker string)
 	return nil
 }
 
+// mockPriceStore is a minimal in-memory PriceStore for exercising the
+// watchlist service without a real price/websocket stack.
+type mockPriceStore struct {
+	prices map[string]float64
+}
+
+func newMockPriceStore(prices map[string]float64) *mockPriceStore {
+	if prices == nil {
+		prices = make(map[string]float64)
+	}
+	return &mockPriceStore{prices: prices}
+}
+
+func (m *mockPriceStore) GetPrice(ticker string) (float64, bool) {
+	p, ok := m.prices[ticker]
+	return p, ok
+}
+
+func (m *mockPriceStore) InitPrice(ticker string, price float64) float64 {
+	if existing, ok := m.prices[ticker]; ok {
+		return existing
+	}
+	m.prices[ticker] = price
+	return price
+}
+
 func TestAddTicker(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -108,9 +134,9 @@ func TestAddTicker(t *testing.T) {
 			mockStore := &MockStore{watchlist: []string{}}
 			logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 			service := NewWatchlistService(mockStore, logger)
-			priceCache := make(map[string]float64)
+			prices := newMockPriceStore(nil)
 
-			result, err := service.AddTicker(context.Background(), 1, tt.request, priceCache)
+			result, err := service.AddTicker(context.Background(), 1, tt.request, prices)
 
 			if tt.wantErr {
 				if err == nil {
@@ -150,17 +176,17 @@ func TestAddTicker_Duplicate(t *testing.T) {
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	service := NewWatchlistService(mockStore, logger)
-	priceCache := make(map[string]float64)
+	prices := newMockPriceStore(nil)
 
 	// First add should succeed
-	_, err := service.AddTicker(context.Background(), 1, models.AddTickerRequest{Ticker: "NVDA"}, priceCache)
+	_, err := service.AddTicker(context.Background(), 1, models.AddTickerRequest{Ticker: "NVDA"}, prices)
 	if err != nil {
 		t.Errorf("First AddTicker() failed = %v", err)
 	}
 
 	// Simulate duplicate error
 	mockStore.addError = &duplicateError{}
-	_, err = service.AddTicker(context.Background(), 1, models.AddTickerRequest{Ticker: "AAPL"}, priceCache)
+	_, err = service.AddTicker(context.Background(), 1, models.AddTickerRequest{Ticker: "AAPL"}, prices)
 	if err == nil {
 		t.Error("AddTicker() expected duplicate error, got nil")
 	}
@@ -234,9 +260,9 @@ func TestGetWatchlist(t *testing.T) {
 	mockStore := &MockStore{watchlist: []string{"AAPL", "NVDA"}}
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	service := NewWatchlistService(mockStore, logger)
-	priceCache := map[string]float64{"AAPL": 175.50, "NVDA": 450.25}
+	prices := newMockPriceStore(map[string]float64{"AAPL": 175.50, "NVDA": 450.25})
 
-	watchlist, err := service.GetWatchlist(context.Background(), 1, priceCache)
+	watchlist, err := service.GetWatchlist(context.Background(), 1, prices)
 
 	if err != nil {
 		t.Errorf("GetWatchlist() error = %v", err)

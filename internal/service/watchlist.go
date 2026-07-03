@@ -10,6 +10,19 @@ import (
 	"stock-ticker-watcher/internal/store"
 )
 
+// PriceStore provides read/seed access to the live price cache without exposing
+// the underlying map (which must never be mutated via a copy).
+type PriceStore interface {
+	GetPrice(ticker string) (float64, bool)
+	InitPrice(ticker string, price float64) float64
+}
+
+// seedPrice returns a deterministic starting price for a ticker that has no
+// live price yet, used until the provider/simulator sends a real update.
+func seedPrice(ticker string) float64 {
+	return 100 + (float64(len(ticker)) * 10)
+}
+
 // WatchlistService handles watchlist business logic
 type WatchlistService struct {
 	store  store.Store
@@ -25,7 +38,7 @@ func NewWatchlistService(store store.Store, logger *slog.Logger) *WatchlistServi
 }
 
 // GetWatchlist retrieves the user's watchlist with current prices
-func (s *WatchlistService) GetWatchlist(ctx context.Context, userID int, priceCache map[string]float64) ([]models.WatchlistItem, error) {
+func (s *WatchlistService) GetWatchlist(ctx context.Context, userID int, prices PriceStore) ([]models.WatchlistItem, error) {
 	tickers, err := s.store.GetWatchlist(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get watchlist: %w", err)
@@ -33,10 +46,10 @@ func (s *WatchlistService) GetWatchlist(ctx context.Context, userID int, priceCa
 
 	watchlist := make([]models.WatchlistItem, 0, len(tickers))
 	for _, ticker := range tickers {
-		price, exists := priceCache[ticker]
+		price, exists := prices.GetPrice(ticker)
 		if !exists {
-			// Initialize with random price if not in cache
-			price = 100 + (float64(len(ticker)) * 10)
+			// Seed with a deterministic starting price until a real update arrives
+			price = seedPrice(ticker)
 		}
 		watchlist = append(watchlist, models.WatchlistItem{
 			Ticker: ticker,
@@ -48,7 +61,7 @@ func (s *WatchlistService) GetWatchlist(ctx context.Context, userID int, priceCa
 }
 
 // AddTicker adds a ticker to the user's watchlist
-func (s *WatchlistService) AddTicker(ctx context.Context, userID int, req models.AddTickerRequest, priceCache map[string]float64) (*models.WatchlistItem, error) {
+func (s *WatchlistService) AddTicker(ctx context.Context, userID int, req models.AddTickerRequest, prices PriceStore) (*models.WatchlistItem, error) {
 	// Validate request
 	ticker := strings.TrimSpace(strings.ToUpper(req.Ticker))
 	if ticker == "" {
@@ -74,16 +87,15 @@ func (s *WatchlistService) AddTicker(ctx context.Context, userID int, req models
 		return nil, fmt.Errorf("failed to add ticker: %w", err)
 	}
 
-	// Initialize price in cache if not exists
-	if _, exists := priceCache[ticker]; !exists {
-		priceCache[ticker] = 100 + (float64(len(ticker)) * 10)
-	}
+	// Seed a starting price in the live cache if one isn't already present.
+	// InitPrice mutates the real cache under lock and returns the effective price.
+	price := prices.InitPrice(ticker, seedPrice(ticker))
 
 	s.logger.Info("Ticker added to watchlist", "user_id", userID, "ticker", ticker)
 
 	return &models.WatchlistItem{
 		Ticker: ticker,
-		Price:  priceCache[ticker],
+		Price:  price,
 	}, nil
 }
 

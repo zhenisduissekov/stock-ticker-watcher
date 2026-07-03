@@ -44,7 +44,7 @@ func NewHandlers(
 func (h *Handlers) GetWatchlist(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	watchlist, err := h.watchlistService.GetWatchlist(ctx, h.config.DemoUserID, h.priceService.GetPriceCache())
+	watchlist, err := h.watchlistService.GetWatchlist(ctx, h.config.DemoUserID, h.priceService)
 	if err != nil {
 		h.respondError(w, http.StatusInternalServerError, "Failed to get watchlist")
 		h.logger.Error("GetWatchlist failed", "error", err)
@@ -64,13 +64,18 @@ func (h *Handlers) AddTicker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	item, err := h.watchlistService.AddTicker(ctx, h.config.DemoUserID, req, h.priceService.GetPriceCache())
+	item, err := h.watchlistService.AddTicker(ctx, h.config.DemoUserID, req, h.priceService)
 	if err != nil {
 		if err.Error() == "ticker already in watchlist" {
 			h.respondError(w, http.StatusConflict, "Ticker already in watchlist")
 			return
 		}
-		h.respondError(w, http.StatusBadRequest, err.Error())
+		if err.Error() == "ticker cannot be empty" || err.Error() == "ticker too long (max 10 characters)" || err.Error() == "ticker contains invalid characters" {
+			h.respondError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		h.respondError(w, http.StatusInternalServerError, "Failed to add ticker")
+		h.logger.Error("AddTicker failed", "error", err)
 		return
 	}
 
@@ -84,12 +89,18 @@ func (h *Handlers) RemoveTicker(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	ticker := vars["ticker"]
 
+	if ticker == "" {
+		h.respondError(w, http.StatusBadRequest, "Ticker is required")
+		return
+	}
+
 	if err := h.watchlistService.RemoveTicker(ctx, h.config.DemoUserID, ticker); err != nil {
-		if err.Error() == "ticker not found in watchlist" {
+		if err.Error() == "ticker not found in watchlist" || err.Error() == "ticker cannot be empty" {
 			h.respondError(w, http.StatusNotFound, "Ticker not found in watchlist")
 			return
 		}
 		h.respondError(w, http.StatusInternalServerError, "Failed to remove ticker")
+		h.logger.Error("RemoveTicker failed", "error", err)
 		return
 	}
 
@@ -132,14 +143,6 @@ func (h *Handlers) WebSocket(w http.ResponseWriter, r *http.Request) {
 	client := websocket.NewClient(clientID, conn, h.hub, h.logger)
 
 	h.hub.Register(client)
-
-	// Send current prices on connection
-	for ticker, price := range h.priceService.GetAllPrices() {
-		client.SendPriceUpdate(models.PriceUpdate{
-			Ticker: ticker,
-			Price:  price,
-		})
-	}
 
 	// Start pumps
 	go client.WritePump()

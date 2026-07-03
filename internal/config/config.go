@@ -13,6 +13,10 @@ type Config struct {
 	DemoUserID      int
 	SimulatePrices  bool
 	SimulateInterval int // in seconds
+	// StaticDir enables optional single-binary serving of the built frontend.
+	// Empty (the default) means the backend serves API/WebSocket only; the
+	// frontend is served separately (nginx in Docker Compose, Vite in dev).
+	StaticDir string
 }
 
 // Load loads configuration from environment variables
@@ -23,6 +27,7 @@ func Load() *Config {
 	demoUserID := getEnvAsInt("DEMO_USER_ID", 1)
 	simulatePrices := getEnvAsBool("SIMULATE_PRICES", true)
 	simulateInterval := getEnvAsInt("SIMULATE_INTERVAL", 2)
+	staticDir := getEnv("STATIC_DIR", "")
 
 	return &Config{
 		Port:            port,
@@ -31,6 +36,7 @@ func Load() *Config {
 		DemoUserID:      demoUserID,
 		SimulatePrices:  simulatePrices,
 		SimulateInterval: simulateInterval,
+		StaticDir:       staticDir,
 	}
 }
 
