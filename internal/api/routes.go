@@ -20,10 +20,14 @@ func (h *Handlers) RegisterRoutes(r *mux.Router) {
 	// API routes
 	api := r.PathPrefix("/api").Subrouter()
 
+	// OPTIONS is included on mutating routes so the CORS preflight matches a
+	// route and runs through corsMiddleware (which short-circuits OPTIONS with
+	// the CORS headers). Without it, mux 404s the preflight and browsers block
+	// the real cross-origin POST/DELETE.
 	api.HandleFunc("/watchlist", h.GetWatchlist).Methods("GET")
-	api.HandleFunc("/watchlist", h.AddTicker).Methods("POST")
-	api.HandleFunc("/watchlist/{ticker}", h.RemoveTicker).Methods("DELETE")
-	api.HandleFunc("/webhooks/prices", h.WebhookPriceUpdate).Methods("POST")
+	api.HandleFunc("/watchlist", h.AddTicker).Methods("POST", "OPTIONS")
+	api.HandleFunc("/watchlist/{ticker}", h.RemoveTicker).Methods("DELETE", "OPTIONS")
+	api.HandleFunc("/webhooks/prices", h.WebhookPriceUpdate).Methods("POST", "OPTIONS")
 
 	// WebSocket endpoint
 	r.HandleFunc("/ws", h.WebSocket)
