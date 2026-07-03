@@ -2,19 +2,41 @@
 
 [![CI](https://github.com/zhenisduissekov/stock-ticker-watcher/actions/workflows/ci.yml/badge.svg)](https://github.com/zhenisduissekov/stock-ticker-watcher/actions/workflows/ci.yml)
 
-A real-time stock watchlist: add tickers, and their prices stream to the browser
-over WebSockets as they change. The backend is a layered Go service; the
-frontend is React + Vite. Data lives in SQLite. Everything runs locally with one
-command or via Docker Compose.
+**Real-time stock watchlist in Go.** Add a ticker and its price streams live to
+your browser over WebSockets. A layered Go backend, a React + Vite frontend, and
+SQLite — running with a single command or via Docker Compose.
 
-## What this is & why it exists
+```bash
+go run ./cmd/server          # backend on :8080
+cd frontend && npm i && npm run dev   # UI on :5173
+```
 
-This is a **portfolio project**, built to demonstrate production-minded backend
-engineering in Go without hiding behind a framework or a pile of infrastructure.
-The problem — a live watchlist fed by a price stream — is deliberately small, so
-the interesting part is *how* it's built: clean layering, correct concurrency,
-graceful shutdown, a subscription-aware WebSocket hub, and tests that exercise
-the real paths. It favors correctness and clarity over feature count.
+**Highlights**
+- 🧱 Clean layered architecture (`api → service → store`), dependencies pointing inward through interfaces
+- 🔌 Subscription-aware WebSocket hub with ping/pong keepalive and backpressure
+- 🔒 Race-free concurrency, graceful shutdown, typed errors classified with `errors.Is`
+- 🗄️ SQLite tuned for reliability (WAL, busy-timeout, foreign keys)
+- ✅ Unit + integration tests (real HTTP/WS), health/readiness probes, `/stats`, structured logs
+- 🐳 Multi-stage Docker builds + Compose; GitHub Actions CI (fmt · vet · test · build)
+
+👉 **New here?** The [2-minute demo walkthrough](DEMO.md) is the fastest way to see it working.
+
+## Why this project matters
+
+Streaming live data to many clients is a deceptively hard backend problem: it
+touches concurrency, connection lifecycle, backpressure, and clean shutdown all
+at once — exactly the areas where real systems break. This project tackles that
+core problem in a **deliberately small, readable** codebase, so the engineering
+decisions are visible instead of buried under features or infrastructure. It's
+built to answer one question well: *can this person write correct, maintainable,
+production-minded Go?*
+
+## What this demonstrates
+
+Idiomatic **Go** · **clean architecture** · **WebSockets** · **concurrency** ·
+**graceful shutdown** · **SQLite reliability** · **testing** · **Docker** ·
+**observability** · **CI**. See the [skills-to-code map](#interview-value--skills-demonstrated)
+below for exactly where each one lives.
 
 ## Architecture
 
@@ -117,6 +139,40 @@ So a ticker you add starts moving within one interval, and the simulator never
 emits prices for symbols nobody is watching. Both the simulator and the webhook
 funnel through `PriceService.UpdatePrice`, which updates the cache and broadcasts
 to the hub — one write path, one source of truth.
+
+## API reference
+
+All examples assume the backend on `localhost:8080`. Full step-by-step in [DEMO.md](DEMO.md).
+
+```bash
+# List the watchlist (tickers + current prices)
+curl -s localhost:8080/api/watchlist
+
+# Add a ticker  → 201 Created (409 if duplicate, 400 if invalid)
+curl -s -X POST localhost:8080/api/watchlist \
+  -H 'Content-Type: application/json' -d '{"ticker":"AAPL"}'
+
+# Remove a ticker  → 200 OK (404 if not present)
+curl -s -X DELETE localhost:8080/api/watchlist/AAPL
+
+# Push a price update (as a third-party provider would)  → 200 OK
+curl -s -X POST localhost:8080/api/webhooks/prices \
+  -H 'Content-Type: application/json' -d '{"ticker":"AAPL","price":180.00}'
+
+# Operational endpoints
+curl -s localhost:8080/healthz   # liveness → {"status":"ok"}
+curl -s localhost:8080/readyz    # readiness (pings DB) → {"status":"ready"}
+curl -s localhost:8080/stats     # {"active_clients":..,"active_subscriptions":..,"price_updates_processed":..}
+```
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/api/watchlist` | List watched tickers with current prices |
+| `POST` | `/api/watchlist` | Add a ticker (`{"ticker":"AAPL"}`) |
+| `DELETE` | `/api/watchlist/{ticker}` | Remove a ticker |
+| `POST` | `/api/webhooks/prices` | Ingest a price update (`{"ticker","price"}`) |
+| `GET` | `/healthz` · `/readyz` · `/stats` | Liveness · readiness · runtime counters |
+| `WS` | `/ws` | Subscribe to tickers, receive live price updates |
 
 ## Configuration
 
